@@ -37,7 +37,7 @@ under the License.
     <properties>
         <scala.binary.version>2.12</scala.binary.version>
         <powermock.version>2.0.9</powermock.version>
-        <flink.version>1.14.4</flink.version>
+        <flink.version>1.17.0</flink.version>
     </properties>
 
     <dependencies>
