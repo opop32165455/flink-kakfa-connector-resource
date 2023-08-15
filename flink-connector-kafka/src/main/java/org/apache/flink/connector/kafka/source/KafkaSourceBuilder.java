@@ -414,8 +414,11 @@ public class KafkaSourceBuilder<OUT> {
      * @return a KafkaSource with the settings made for this builder.
      */
     public KafkaSource<OUT> build() {
+        //参数判断
         sanityCheck();
+        //解析必备参数
         parseAndSetRequiredProperties();
+        //source
         return new KafkaSource<>(
                 subscriber,
                 startingOffsetsInitializer,

@@ -82,7 +82,9 @@ import static org.apache.flink.connector.kafka.testutils.KafkaSourceExternalCont
 import static org.apache.flink.connector.kafka.testutils.KafkaSourceExternalContext.SplitMappingMode.TOPIC;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Unite test class for {@link KafkaSource}. */
+/**
+ * Unite test class for {@link KafkaSource}.
+ */
 public class KafkaSourceITCase {
     private static final String TOPIC1 = "topic1";
     private static final String TOPIC2 = "topic2";
@@ -116,7 +118,7 @@ public class KafkaSourceITCase {
                             new ProducerRecord<>(topic, 0, currentTimestamp + 1L, "key0", 0),
                             new ProducerRecord<>(topic, 0, currentTimestamp + 2L, "key1", 1),
                             new ProducerRecord<>(topic, 0, currentTimestamp + 3L, "key2", 2)));
-
+            //todo start create source
             KafkaSource<PartitionAndValue> source =
                     KafkaSource.<PartitionAndValue>builder()
                             .setBootstrapServers(KafkaSourceTestEnv.brokerConnectionStrings)
@@ -185,11 +187,11 @@ public class KafkaSourceITCase {
             env.setParallelism(1);
 
             try (CloseableIterator<Integer> resultIterator =
-                    env.fromSource(
-                                    source,
-                                    WatermarkStrategy.noWatermarks(),
-                                    "testValueOnlyDeserializer")
-                            .executeAndCollect()) {
+                         env.fromSource(
+                                         source,
+                                         WatermarkStrategy.noWatermarks(),
+                                         "testValueOnlyDeserializer")
+                                 .executeAndCollect()) {
                 AtomicInteger actualSum = new AtomicInteger();
                 resultIterator.forEachRemaining(actualSum::addAndGet);
 
@@ -199,11 +201,11 @@ public class KafkaSourceITCase {
                 // e.g. Values in partition 5 should be {5, 6, 7, 8, 9}
                 int expectedSum = 0;
                 for (int partition = 0;
-                        partition < KafkaSourceTestEnv.NUM_PARTITIONS;
-                        partition++) {
+                     partition < KafkaSourceTestEnv.NUM_PARTITIONS;
+                     partition++) {
                     for (int value = partition;
-                            value < KafkaSourceTestEnv.NUM_RECORDS_PER_PARTITION;
-                            value++) {
+                         value < KafkaSourceTestEnv.NUM_RECORDS_PER_PARTITION;
+                         value++) {
                         expectedSum += value;
                     }
                 }
@@ -327,11 +329,11 @@ public class KafkaSourceITCase {
             StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
             env.setParallelism(1);
             try (CloseableIterator<PartitionAndValue> iterator =
-                    env.fromSource(
-                                    source,
-                                    WatermarkStrategy.noWatermarks(),
-                                    "testConsumingEmptyTopic")
-                            .executeAndCollect()) {
+                         env.fromSource(
+                                         source,
+                                         WatermarkStrategy.noWatermarks(),
+                                         "testConsumingEmptyTopic")
+                                 .executeAndCollect()) {
                 assertThat(iterator.hasNext()).isFalse();
             }
         }
@@ -371,11 +373,13 @@ public class KafkaSourceITCase {
         }
     }
 
-    /** Integration test based on connector testing framework. */
+    /**
+     * Integration test based on connector testing framework.
+     */
     @Nested
     class IntegrationTests extends SourceTestSuiteBase<String> {
         @TestSemantics
-        CheckpointingMode[] semantics = new CheckpointingMode[] {CheckpointingMode.EXACTLY_ONCE};
+        CheckpointingMode[] semantics = new CheckpointingMode[]{CheckpointingMode.EXACTLY_ONCE};
 
         // Defines test environment on Flink MiniCluster
         @SuppressWarnings("unused")
@@ -413,7 +417,8 @@ public class KafkaSourceITCase {
         private String tp;
         private int value;
 
-        public PartitionAndValue() {}
+        public PartitionAndValue() {
+        }
 
         private PartitionAndValue(TopicPartition tp, int value) {
             this.tp = tp.toString();
@@ -527,6 +532,7 @@ public class KafkaSourceITCase {
         }
 
         @Override
-        public void onPeriodicEmit(WatermarkOutput output) {}
+        public void onPeriodicEmit(WatermarkOutput output) {
+        }
     }
 }

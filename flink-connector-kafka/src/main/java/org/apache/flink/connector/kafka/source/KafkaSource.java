@@ -84,28 +84,20 @@ import java.util.function.Supplier;
  * @param <OUT> the output type of the source.
  */
 @PublicEvolving
-public class KafkaSource<OUT>
-        implements Source<OUT, KafkaPartitionSplit, KafkaSourceEnumState>,
-                ResultTypeQueryable<OUT> {
+public class KafkaSource<OUT> implements Source<OUT, KafkaPartitionSplit, KafkaSourceEnumState>, ResultTypeQueryable<OUT> {
     private static final long serialVersionUID = -8755372893283732098L;
     // Users can choose only one of the following ways to specify the topics to consume from.
     private final KafkaSubscriber subscriber;
     // Users can specify the starting / stopping offset initializer.
     private final OffsetsInitializer startingOffsetsInitializer;
     private final OffsetsInitializer stoppingOffsetsInitializer;
-    // Boundedness
+    // 是否有界限 kafka一般无界 也可以指定offset起点终点来使用有界流
     private final Boundedness boundedness;
     private final KafkaRecordDeserializationSchema<OUT> deserializationSchema;
     // The configurations.
     private final Properties props;
 
-    KafkaSource(
-            KafkaSubscriber subscriber,
-            OffsetsInitializer startingOffsetsInitializer,
-            @Nullable OffsetsInitializer stoppingOffsetsInitializer,
-            Boundedness boundedness,
-            KafkaRecordDeserializationSchema<OUT> deserializationSchema,
-            Properties props) {
+    KafkaSource(KafkaSubscriber subscriber, OffsetsInitializer startingOffsetsInitializer, @Nullable OffsetsInitializer stoppingOffsetsInitializer, Boundedness boundedness, KafkaRecordDeserializationSchema<OUT> deserializationSchema, Properties props) {
         this.subscriber = subscriber;
         this.startingOffsetsInitializer = startingOffsetsInitializer;
         this.stoppingOffsetsInitializer = stoppingOffsetsInitializer;
@@ -128,83 +120,66 @@ public class KafkaSource<OUT>
         return this.boundedness;
     }
 
+    /**
+     * todo 从数据源读取数据（读取核心方法）
+     */
     @Internal
     @Override
-    public SourceReader<OUT, KafkaPartitionSplit> createReader(SourceReaderContext readerContext)
-            throws Exception {
-        return createReader(readerContext, (ignore) -> {});
+    public SourceReader<OUT, KafkaPartitionSplit> createReader(SourceReaderContext readerContext) throws Exception {
+        return createReader(readerContext, (ignore) -> {
+        });
     }
 
     @VisibleForTesting
-    SourceReader<OUT, KafkaPartitionSplit> createReader(
-            SourceReaderContext readerContext, Consumer<Collection<String>> splitFinishedHook)
-            throws Exception {
-        FutureCompletingBlockingQueue<RecordsWithSplitIds<ConsumerRecord<byte[], byte[]>>>
-                elementsQueue = new FutureCompletingBlockingQueue<>();
-        deserializationSchema.open(
-                new DeserializationSchema.InitializationContext() {
-                    @Override
-                    public MetricGroup getMetricGroup() {
-                        return readerContext.metricGroup().addGroup("deserializer");
-                    }
+    SourceReader<OUT, KafkaPartitionSplit> createReader(SourceReaderContext readerContext, Consumer<Collection<String>> splitFinishedHook) throws Exception {
+        FutureCompletingBlockingQueue<RecordsWithSplitIds<ConsumerRecord<byte[], byte[]>>> elementsQueue = new FutureCompletingBlockingQueue<>();
+        deserializationSchema.open(new DeserializationSchema.InitializationContext() {
+            @Override
+            public MetricGroup getMetricGroup() {
+                return readerContext.metricGroup().addGroup("deserializer");
+            }
 
-                    @Override
-                    public UserCodeClassLoader getUserCodeClassLoader() {
-                        return readerContext.getUserCodeClassLoader();
-                    }
-                });
-        final KafkaSourceReaderMetrics kafkaSourceReaderMetrics =
-                new KafkaSourceReaderMetrics(readerContext.metricGroup());
+            @Override
+            public UserCodeClassLoader getUserCodeClassLoader() {
+                return readerContext.getUserCodeClassLoader();
+            }
+        });
+        final KafkaSourceReaderMetrics kafkaSourceReaderMetrics = new KafkaSourceReaderMetrics(readerContext.metricGroup());
 
-        Supplier<KafkaPartitionSplitReader> splitReaderSupplier =
-                () -> new KafkaPartitionSplitReader(props, readerContext, kafkaSourceReaderMetrics);
+        //分区函数
+        Supplier<KafkaPartitionSplitReader> splitReaderSupplier = () -> new KafkaPartitionSplitReader(props, readerContext, kafkaSourceReaderMetrics);
         KafkaRecordEmitter<OUT> recordEmitter = new KafkaRecordEmitter<>(deserializationSchema);
 
-        return new KafkaSourceReader<>(
-                elementsQueue,
-                new KafkaSourceFetcherManager(
-                        elementsQueue, splitReaderSupplier::get, splitFinishedHook),
+        return new KafkaSourceReader<>(elementsQueue,
+                new KafkaSourceFetcherManager(elementsQueue, splitReaderSupplier::get, splitFinishedHook),
                 recordEmitter,
+                //核心配置
                 toConfiguration(props),
                 readerContext,
                 kafkaSourceReaderMetrics);
     }
 
+    /**
+     * todo 分片枚举器 高并行 读取数据
+     */
     @Internal
     @Override
-    public SplitEnumerator<KafkaPartitionSplit, KafkaSourceEnumState> createEnumerator(
-            SplitEnumeratorContext<KafkaPartitionSplit> enumContext) {
-        return new KafkaSourceEnumerator(
-                subscriber,
-                startingOffsetsInitializer,
-                stoppingOffsetsInitializer,
-                props,
-                enumContext,
-                boundedness);
+    public SplitEnumerator<KafkaPartitionSplit, KafkaSourceEnumState> createEnumerator(SplitEnumeratorContext<KafkaPartitionSplit> enumContext) {
+        return new KafkaSourceEnumerator(subscriber, startingOffsetsInitializer, stoppingOffsetsInitializer, props, enumContext, boundedness);
     }
-
+    //todo 恢复枚举器
     @Internal
     @Override
-    public SplitEnumerator<KafkaPartitionSplit, KafkaSourceEnumState> restoreEnumerator(
-            SplitEnumeratorContext<KafkaPartitionSplit> enumContext,
-            KafkaSourceEnumState checkpoint)
-            throws IOException {
-        return new KafkaSourceEnumerator(
-                subscriber,
-                startingOffsetsInitializer,
-                stoppingOffsetsInitializer,
-                props,
-                enumContext,
-                boundedness,
-                checkpoint.assignedPartitions());
+    public SplitEnumerator<KafkaPartitionSplit, KafkaSourceEnumState> restoreEnumerator(SplitEnumeratorContext<KafkaPartitionSplit> enumContext, KafkaSourceEnumState checkpoint) throws IOException {
+        return new KafkaSourceEnumerator(subscriber, startingOffsetsInitializer, stoppingOffsetsInitializer, props, enumContext, boundedness, checkpoint.assignedPartitions());
     }
-
+    //序列化
     @Internal
     @Override
     public SimpleVersionedSerializer<KafkaPartitionSplit> getSplitSerializer() {
         return new KafkaPartitionSplitSerializer();
     }
-
+    //反序列化
     @Internal
     @Override
     public SimpleVersionedSerializer<KafkaSourceEnumState> getEnumeratorCheckpointSerializer() {
