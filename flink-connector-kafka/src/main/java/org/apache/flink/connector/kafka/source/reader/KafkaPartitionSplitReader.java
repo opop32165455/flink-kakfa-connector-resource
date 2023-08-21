@@ -94,10 +94,13 @@ public class KafkaPartitionSplitReader
         this.kafkaSourceReaderMetrics.registerNumBytesIn(consumer);
     }
 
+
+    //todo 真正从kafka获取数据
     @Override
     public RecordsWithSplitIds<ConsumerRecord<byte[], byte[]>> fetch() throws IOException {
         ConsumerRecords<byte[], byte[]> consumerRecords;
         try {
+            //consumer中设置了 只读某个partition
             consumerRecords = consumer.poll(Duration.ofMillis(POLL_TIMEOUT));
         } catch (WakeupException | IllegalStateException e) {
             // IllegalStateException will be thrown if the consumer is not assigned any partitions.
@@ -110,6 +113,7 @@ public class KafkaPartitionSplitReader
             markEmptySplitsAsFinished(recordsBySplits);
             return recordsBySplits;
         }
+        //转成partition split record
         KafkaPartitionSplitRecords recordsBySplits =
                 new KafkaPartitionSplitRecords(consumerRecords, kafkaSourceReaderMetrics);
         List<TopicPartition> finishedPartitions = new ArrayList<>();
@@ -118,13 +122,16 @@ public class KafkaPartitionSplitReader
             final List<ConsumerRecord<byte[], byte[]>> recordsFromPartition =
                     consumerRecords.records(tp);
 
+            //partition中有数据
             if (recordsFromPartition.size() > 0) {
+                //最后一条
                 final ConsumerRecord<byte[], byte[]> lastRecord =
                         recordsFromPartition.get(recordsFromPartition.size() - 1);
 
                 // After processing a record with offset of "stoppingOffset - 1", the split reader
                 // should not continue fetching because the record with stoppingOffset may not
                 // exist. Keep polling will just block forever.
+                //如果到了终止offset 标记这个partition不需要再读取了
                 if (lastRecord.offset() >= stoppingOffset - 1) {
                     recordsBySplits.setPartitionStoppingOffset(tp, stoppingOffset);
                     finishSplitAtRecord(
@@ -188,6 +195,7 @@ public class KafkaPartitionSplitReader
                 .forEach(
                         s -> {
                             newPartitionAssignments.add(s.getTopicPartition());
+                            //partition放入到 earliest/latest list
                             parseStartingOffsets(
                                     s,
                                     partitionsStartingFromEarliest,
@@ -201,6 +209,7 @@ public class KafkaPartitionSplitReader
 
         // Assign new partitions.
         newPartitionAssignments.addAll(consumer.assignment());
+        //todo assign 更改消费者消费分区 读取完的分区 不需要再消费
         consumer.assign(newPartitionAssignments);
 
         // Seek on the newly assigned partitions to their stating offsets.

@@ -76,6 +76,7 @@ public class KafkaSourceEnumerator
     /**
      * The discovered and initialized partition splits that are waiting for owner reader to be
      * ready.
+     * k=根据并行hash的id v=切分好的split
      */
     private final Map<Integer, Set<KafkaPartitionSplit>> pendingPartitionSplitAssignment;
 
@@ -136,14 +137,16 @@ public class KafkaSourceEnumerator
      *
      * <p>Depending on {@link #partitionDiscoveryIntervalMs}, the enumerator will trigger a one-time
      * partition discovery, or schedule a callable for discover partitions periodically.
+     * <p>定时去发现kafka的是否有新建partition
+     *
      *
      * <p>The invoking chain of partition discovery would be:
-     *
+     * <p> 发现分区的调用流程
      * <ol>
-     *   <li>{@link #getSubscribedTopicPartitions} in worker thread
-     *   <li>{@link #checkPartitionChanges} in coordinator thread
-     *   <li>{@link #initializePartitionSplits} in worker thread
-     *   <li>{@link #handlePartitionSplitChanges} in coordinator thread
+     *   <li>{@link #getSubscribedTopicPartitions} in worker thread 获取kafka订阅的topic信息
+     *   <li>{@link #checkPartitionChanges} in coordinator thread 检测是否有分区修改，如果有使用{@link #checkPartitionChanges}重新初始化分区的分片
+     *   <li>{@link #initializePartitionSplits} in worker thread 分区初始化拆分，拆分成多个split
+     *   <li>{@link #handlePartitionSplitChanges} in coordinator thread 初始化的split进入pending，尝试发送给消费者reader
      * </ol>
      */
     @Override
@@ -155,12 +158,15 @@ public class KafkaSourceEnumerator
                             + "with partition discovery interval of {} ms.",
                     consumerGroupId,
                     partitionDiscoveryIntervalMs);
+
             context.callAsync(
+                    //获取订阅topic的partition
                     this::getSubscribedTopicPartitions,
                     this::checkPartitionChanges,
                     0,
                     partitionDiscoveryIntervalMs);
         } else {
+            //不配置partition.discovery.interval.ms 则不会持续发现
             LOG.info(
                     "Starting the KafkaSourceEnumerator for consumer group {} "
                             + "without periodic partition discovery.",
@@ -235,23 +241,29 @@ public class KafkaSourceEnumerator
                     "Failed to list subscribed topic partitions due to ", t);
         }
         final PartitionChange partitionChange = getPartitionChange(fetchedPartitions);
+        //有任意partition信息变更 重新初始化split 第一次则直接初始化
         if (partitionChange.isEmpty()) {
             return;
         }
         context.callAsync(
+                //initialize Partition Splits
                 () -> initializePartitionSplits(partitionChange),
                 this::handlePartitionSplitChanges);
     }
 
     /**
+     * <p>zxc分区初始化拆分，拆分成多个split
+     *
      * Initialize splits for newly discovered partitions.
      *
      * <p>Enumerator will be responsible for fetching offsets when initializing splits if:
-     *
+     * <p>zxc 发现有两种情况
      * <ul>
      *   <li>using timestamp for initializing offset
+     *   用户已经配置，使用配置的offset
      *   <li>or using specified offset, but the offset is not provided for the newly discovered
      *       partitions
+     *   对于新建partition没有指定的offset
      * </ul>
      *
      * <p>Otherwise offsets will be initialized by readers.
@@ -273,24 +285,29 @@ public class KafkaSourceEnumerator
         Map<TopicPartition, Long> stoppingOffsets =
                 stoppingOffsetInitializer.getPartitionOffsets(newPartitions, offsetsRetriever);
 
+        //构建split
         Set<KafkaPartitionSplit> partitionSplits = new HashSet<>(newPartitions.size());
         for (TopicPartition tp : newPartitions) {
             Long startingOffset = startingOffsets.get(tp);
             long stoppingOffset =
                     stoppingOffsets.getOrDefault(tp, KafkaPartitionSplit.NO_STOPPING_OFFSET);
+            //构建KafkaPartitionSplit topic-number，start-offset，stop-offset
             partitionSplits.add(new KafkaPartitionSplit(tp, startingOffset, stoppingOffset));
         }
+        //split和废弃的part封装
         return new PartitionSplitChange(partitionSplits, partitionChange.getRemovedPartitions());
     }
 
     /**
+     * <p>zxc初始化的split进入pending，尝试发送给消费者reader
+     *
      * Mark partition splits initialized by {@link
      * KafkaSourceEnumerator#initializePartitionSplits(PartitionChange)} as pending and try to
      * assign pending splits to registered readers.
      *
      * <p>NOTE: This method should only be invoked in the coordinator executor thread.
      *
-     * @param partitionSplitChange Partition split changes
+     * @param partitionSplitChange Partition split changes 从{@link #initializePartitionSplits}初始化得到的split
      * @param t Exception in worker thread
      */
     private void handlePartitionSplitChanges(
@@ -304,6 +321,7 @@ public class KafkaSourceEnumerator
         }
         // TODO: Handle removed partitions.
         addPartitionSplitChangeToPendingAssignments(partitionSplitChange.newPartitionSplits);
+        //enumerator端 尝试对 reader端 进行split交互
         assignPendingPartitionSplits(context.registeredReaders().keySet());
     }
 
@@ -326,6 +344,7 @@ public class KafkaSourceEnumerator
 
     // This method should only be invoked in the coordinator executor thread.
     private void assignPendingPartitionSplits(Set<Integer> pendingReaders) {
+        //从pendingPartitionSplitAssignment获取Assign的split
         Map<Integer, List<KafkaPartitionSplit>> incrementalAssignment = new HashMap<>();
 
         // Check if there's any pending splits for given readers
@@ -348,6 +367,7 @@ public class KafkaSourceEnumerator
             }
         }
 
+        //todo 核心交互方法 context.assignSplits（）
         // Assign pending splits to readers
         if (!incrementalAssignment.isEmpty()) {
             LOG.info("Assigning splits to readers {}", incrementalAssignment);
@@ -355,6 +375,7 @@ public class KafkaSourceEnumerator
         }
 
         // If periodically partition discovery is disabled and the initializing discovery has done,
+        // 未开启 定时发现行partition 一般为有界流
         // signal NoMoreSplitsEvent to pending readers
         if (noMoreNewPartitionSplits && boundedness == Boundedness.BOUNDED) {
             LOG.debug(
@@ -422,7 +443,7 @@ public class KafkaSourceEnumerator
      * <p>The resulting distribution of partitions of a single topic has the following contract:
      *
      * <ul>
-     *   <li>1. Uniformly distributed across subtasks
+     *   <li>1. Uniformly distributed across subtasks 均匀分布
      *   <li>2. Partitions are round-robin distributed (strictly clockwise w.r.t. ascending subtask
      *       indices) by using the partition id as the offset from a starting index (i.e., the index
      *       of the subtask which partition 0 of the topic will be assigned to, determined using the
@@ -430,17 +451,17 @@ public class KafkaSourceEnumerator
      * </ul>
      *
      * @param tp the Kafka partition to assign.
-     * @param numReaders the total number of readers.
+     * @param parallelism the total number of readers.
      * @return the id of the subtask that owns the split.
      */
     @VisibleForTesting
-    static int getSplitOwner(TopicPartition tp, int numReaders) {
-        int startIndex = ((tp.topic().hashCode() * 31) & 0x7FFFFFFF) % numReaders;
+    static int getSplitOwner(TopicPartition tp, int parallelism) {
+        int startIndex = ((tp.topic().hashCode() * 31) & 0x7FFFFFFF) % parallelism;
 
         // here, the assumption is that the id of Kafka partitions are always ascending
         // starting from 0, and therefore can be used directly as the offset clockwise from the
         // start index
-        return (startIndex + tp.partition()) % numReaders;
+        return (startIndex + tp.partition()) % parallelism;
     }
 
     @VisibleForTesting

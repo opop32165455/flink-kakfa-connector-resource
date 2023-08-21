@@ -122,6 +122,11 @@ public class KafkaSource<OUT> implements Source<OUT, KafkaPartitionSplit, KafkaS
 
     /**
      * todo 从数据源读取数据（读取核心方法）
+     * 则负责具体partition数据的读取。读取或者拉取Enumerator分片后的数据
+     * 1.运行在task manager上
+     * 2.接收enumerator处理好的split数据
+     * 3.主动拉取enumerator的split数据
+     * 4.将split的数据，处理，然后从kafka读取
      */
     @Internal
     @Override
@@ -146,12 +151,19 @@ public class KafkaSource<OUT> implements Source<OUT, KafkaPartitionSplit, KafkaS
         });
         final KafkaSourceReaderMetrics kafkaSourceReaderMetrics = new KafkaSourceReaderMetrics(readerContext.metricGroup());
 
-        //分区函数
+        //从kafka 读取分区数据
         Supplier<KafkaPartitionSplitReader> splitReaderSupplier = () -> new KafkaPartitionSplitReader(props, readerContext, kafkaSourceReaderMetrics);
+        // kafka record 处理器
         KafkaRecordEmitter<OUT> recordEmitter = new KafkaRecordEmitter<>(deserializationSchema);
 
+        //用于提交kafka offset commit
+        KafkaSourceFetcherManager fetcherManager =
+                new KafkaSourceFetcherManager(elementsQueue,
+                        splitReaderSupplier::get,
+                        splitFinishedHook);
+
         return new KafkaSourceReader<>(elementsQueue,
-                new KafkaSourceFetcherManager(elementsQueue, splitReaderSupplier::get, splitFinishedHook),
+                fetcherManager,
                 recordEmitter,
                 //核心配置
                 toConfiguration(props),
@@ -160,7 +172,11 @@ public class KafkaSource<OUT> implements Source<OUT, KafkaPartitionSplit, KafkaS
     }
 
     /**
-     * todo 分片枚举器 高并行 读取数据
+     * todo 分片枚举器 高并行 读取数据 （核心）
+     * 1.负责发现需要读取的 kafka partition（负责发现需要读取的kafka partition）
+     * 2.根据并行度切分任务，构造split，需要避开数据倾斜
+     * 3.发送split到reader
+     * 4.让reader能够主动拉取split
      */
     @Internal
     @Override
@@ -168,6 +184,7 @@ public class KafkaSource<OUT> implements Source<OUT, KafkaPartitionSplit, KafkaS
         return new KafkaSourceEnumerator(subscriber, startingOffsetsInitializer, stoppingOffsetsInitializer, props, enumContext, boundedness);
     }
     //todo 恢复枚举器
+    //能够从checkpoint恢复 继续执行分片
     @Internal
     @Override
     public SplitEnumerator<KafkaPartitionSplit, KafkaSourceEnumState> restoreEnumerator(SplitEnumeratorContext<KafkaPartitionSplit> enumContext, KafkaSourceEnumState checkpoint) throws IOException {
